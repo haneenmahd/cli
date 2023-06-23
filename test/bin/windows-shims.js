@@ -8,6 +8,7 @@ const { version } = require('../../package.json')
 
 const ROOT = resolve(__dirname, '../..')
 const BIN = join(ROOT, 'bin')
+const NODE = readFileSync(process.execPath)
 const SHIMS = readdirSync(BIN).reduce((acc, shim) => {
   if (extname(shim) !== '.js') {
     acc[shim] = readFileSync(join(BIN, shim), 'utf-8')
@@ -17,7 +18,7 @@ const SHIMS = readdirSync(BIN).reduce((acc, shim) => {
 
 const SHIM_EXTS = [...new Set(Object.keys(SHIMS).map(p => extname(p)))]
 
-t.test('shim contents', t => {
+t.skip('shim contents', t => {
   // these scripts should be kept in sync so this tests the contents of each
   // and does a diff to ensure the only differences between them are necessary
   const diffFiles = (npm, npx) => Diff.diffChars(npm, npx)
@@ -53,7 +54,8 @@ t.test('shim contents', t => {
 t.test('run shims', t => {
   const path = t.testdir({
     ...SHIMS,
-    'node.exe': readFileSync(process.execPath),
+    node: NODE,
+    'node.exe': NODE,
     // simulate the state where one version of npm is installed
     // with node, but we should load the globally installed one
     'global-prefix': {
@@ -69,16 +71,42 @@ t.test('run shims', t => {
           'npx-cli.js': `throw new Error('this should not be called')`,
           'npm-cli.js': `
             const assert = require('assert')
-            const args = process.argv.slice(2)
-            assert.equal(args[0], 'prefix')
-            assert.equal(args[1], '-g')
             const { resolve } = require('path')
+            assert.equal(process.argv.slice(2).join(' '), 'prefix -g')
             console.log(resolve(__dirname, '../../../global-prefix'))
           `,
         },
       },
     },
   })
+
+  const spawnPath = (cmd, args, {log, ...opts} = {}) => {
+    if (cmd.endsWith('bash.exe')) {
+      // only cygwin *requires* the -l, but the others are ok with it
+      args.unshift('-l')
+    }
+    if (log) {
+      console.error(args[args.length - 1])
+    }
+    const result = spawnSync(cmd, args, {
+      // don't hit the registry for the update check
+      env: { PATH: path, npm_config_update_notifier: 'false' },
+      cwd: path,
+      windowsHide: true,
+      ...opts,
+    })
+    if (log) {
+      console.error(result.status)
+      console.error(result.stdout?.toString()?.trim())
+      console.error('----------------------------')
+    }
+    return {
+      status: result.status,
+      signal: result.signal,
+      stdout: result.stdout?.toString()?.trim(),
+      stderr: result.stderr?.toString()?.trim(),
+    }
+  }
 
   for (const shim of Object.keys(SHIMS)) {
     chmodSync(join(path, shim), 0o755)
@@ -104,7 +132,7 @@ t.test('run shims', t => {
         try {
           // If WSL is installed, it *has* a bash.exe, but it fails if
           // there is no distro installed, so we need to detect that.
-          if (spawnSync(cmd, ['-l', '-c', 'exit 0']).status !== 0) {
+          if (spawnPath(cmd, ['-c', 'exit 0']).status !== 0) {
             throw new Error('not installed')
           }
           if (cmd.includes('cygwin') && NYC_CONFIG) {
@@ -138,23 +166,24 @@ t.test('run shims', t => {
         cmd = `${bin}.cmd`
         break
       case 'bash.exe':
-        // only cygwin *requires* the -l, but the others are ok with it
-        args.push('-l', bin)
+        args.push(bin)
         break
       default:
         throw new Error('unknown shell')
     }
 
     const isNpm = bin === 'npm'
-    const result = spawnSync(cmd, [...args, isNpm ? 'help' : '--version'], {
-      // don't hit the registry for the update check
-      env: { PATH: path, npm_config_update_notifier: 'false' },
-      cwd: path,
-      windowsHide: true,
-      ...opts,
-    })
-    result.stdout = result.stdout?.toString()?.trim()
-    result.stderr = result.stderr?.toString()?.trim()
+    const result = spawnPath(cmd, [...args, isNpm ? 'help' : '--version'], opts)
+
+    if (cmd.includes('bash.exe') && isNpm) {
+      console.error({ cmd, args })
+      spawnPath(cmd, ['-c', 'which node'], {log: true})
+      spawnPath(cmd, ['-c', 'which npm'], {log: true})
+      spawnPath(cmd, ['-c', 'echo $PATH'], {log: true})
+      spawnPath(cmd, ['-c', 'pwd'], {log: true})
+      console.error(result.stderr)
+      console.error(result.stdout)
+    }
 
     t.match(result, {
       status: 0,

@@ -22,7 +22,7 @@
       {{> stepsSetup }}
       - name: Setup WSL
         uses: Vampire/setup-wsl@v2.0.1
-      - name: Set up Cygwin
+      - name: Setup Cygwin
         uses: egor-tensin/setup-cygwin@v4.0.1
         with:
           install-dir: C:\cygwin64
